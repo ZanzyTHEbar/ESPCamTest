@@ -36,53 +36,6 @@ const int FPS = 10;
 // We will handle web client requests every 100 ms (10 Hz)
 const int WSINTERVAL = 100;
 
-// ======== Server Connection Handler Task ==========================
-void mjpegCB(void *pvParameters)
-{
-  TickType_t xLastWakeTime;
-  const TickType_t xFrequency = pdMS_TO_TICKS(WSINTERVAL);
-
-  // Creating frame synchronization semaphore and initializing it
-  frameSync = xSemaphoreCreateBinary();
-  xSemaphoreGive(frameSync);
-
-  //=== setup section  ==================
-
-  //  Creating RTOS task for grabbing frames from the camera
-  xTaskCreatePinnedToCore(
-      camCB,    // callback
-      "cam",    // name
-      4 * 1024, // stacj size
-      NULL,     // parameters
-      2,        // priority
-      &tCam,    // RTOS task handle
-      PRO_CPU); // core
-
-  //  Registering webserver handling routines
-  server.on("/mjpeg/1", HTTP_GET, handleJPGSstream);
-  server.onNotFound(handleNotFound);
-
-  //  Starting webserver
-  server.begin();
-
-  noActiveClients = 0;
-
-  Serial.printf("mjpegCB: free heap (start)  : %d\n", ESP.getFreeHeap());
-
-  xLastWakeTime = xTaskGetTickCount();
-
-  //  int ticker = 0;
-  for (;;)
-  {
-    server.handleClient();
-
-    //  After every server client handling request, we let other tasks run and then pause
-    taskYIELD();
-    vTaskDelayUntil(&xLastWakeTime, xFrequency);
-    //    if ( (ticker++ % 10) == 0 ) Serial.printf("mjpegCB: main loop tick\n");
-  }
-}
-
 // Current frame information
 volatile uint32_t frameNumber;
 // volatile size_t   camSize;    // size of the current frame, byte
@@ -190,41 +143,6 @@ struct streamInfo
   TaskHandle_t task;
 };
 
-// ==== Handle connection request from clients ===============================
-void handleJPGSstream(void)
-{
-  if (noActiveClients >= MAX_CLIENTS)
-    return;
-  Serial.printf("handleJPGSstream start: free heap  : %d\n", ESP.getFreeHeap());
-
-  streamInfo *info = (streamInfo *)malloc(sizeof(streamInfo));
-  info->client = new WiFiClient;
-  *(info->client) = server.client();
-
-  //  Creating task to push the stream to all connected clients
-  int rc = xTaskCreatePinnedToCore(
-      streamCB,
-      "strmCB",
-      3 * 1024,
-      (void *)info,
-      2,
-      &info->task,
-      APP_CPU);
-  if (rc != pdPASS)
-  {
-    Serial.printf("handleJPGSstream: error creating RTOS task. rc = %d\n", rc);
-    Serial.printf("handleJPGSstream: free heap  : %d\n", ESP.getFreeHeap());
-    //    Serial.printf("stk high wm: %d\n", uxTaskGetStackHighWaterMark(tSend));
-    delete info;
-  }
-
-  noActiveClients++;
-
-  // Wake up streaming tasks, if they were previously suspended:
-  if (eTaskGetState(tCam) == eSuspended)
-    vTaskResume(tCam);
-}
-
 // ==== Actually stream content to all connected clients ========================
 void streamCB(void *pvParameters)
 {
@@ -308,6 +226,41 @@ void streamCB(void *pvParameters)
   }
 }
 
+// ==== Handle connection request from clients ===============================
+void handleJPGSstream(void)
+{
+  if (noActiveClients >= MAX_CLIENTS)
+    return;
+  Serial.printf("handleJPGSstream start: free heap  : %d\n", ESP.getFreeHeap());
+
+  streamInfo *info = (streamInfo *)malloc(sizeof(streamInfo));
+  info->client = new WiFiClient;
+  *(info->client) = server.client();
+
+  //  Creating task to push the stream to all connected clients
+  int rc = xTaskCreatePinnedToCore(
+      streamCB,
+      "strmCB",
+      3 * 1024,
+      (void *)info,
+      2,
+      &info->task,
+      APP_CPU);
+  if (rc != pdPASS)
+  {
+    Serial.printf("handleJPGSstream: error creating RTOS task. rc = %d\n", rc);
+    Serial.printf("handleJPGSstream: free heap  : %d\n", ESP.getFreeHeap());
+    //    Serial.printf("stk high wm: %d\n", uxTaskGetStackHighWaterMark(tSend));
+    delete info;
+  }
+
+  noActiveClients++;
+
+  // Wake up streaming tasks, if they were previously suspended:
+  if (eTaskGetState(tCam) == eSuspended)
+    vTaskResume(tCam);
+}
+
 // ==== Handle invalid URL requests ============================================
 void handleNotFound()
 {
@@ -320,6 +273,53 @@ void handleNotFound()
   message += server.args();
   message += "\n";
   server.send(200, "text / plain", message);
+}
+
+// ======== Server Connection Handler Task ==========================
+void mjpegCB(void *pvParameters)
+{
+  TickType_t xLastWakeTime;
+  const TickType_t xFrequency = pdMS_TO_TICKS(WSINTERVAL);
+
+  // Creating frame synchronization semaphore and initializing it
+  frameSync = xSemaphoreCreateBinary();
+  xSemaphoreGive(frameSync);
+
+  //=== setup section  ==================
+
+  //  Creating RTOS task for grabbing frames from the camera
+  xTaskCreatePinnedToCore(
+      camCB,    // callback
+      "cam",    // name
+      4 * 1024, // stacj size
+      NULL,     // parameters
+      2,        // priority
+      &tCam,    // RTOS task handle
+      PRO_CPU); // core
+
+  //  Registering webserver handling routines
+  server.on("/mjpeg/1", HTTP_GET, handleJPGSstream);
+  server.onNotFound(handleNotFound);
+
+  //  Starting webserver
+  server.begin();
+
+  noActiveClients = 0;
+
+  Serial.printf("mjpegCB: free heap (start)  : %d\n", ESP.getFreeHeap());
+
+  xLastWakeTime = xTaskGetTickCount();
+
+  //  int ticker = 0;
+  for (;;)
+  {
+    server.handleClient();
+
+    //  After every server client handling request, we let other tasks run and then pause
+    taskYIELD();
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    //    if ( (ticker++ % 10) == 0 ) Serial.printf("mjpegCB: main loop tick\n");
+  }
 }
 
 // ==== SETUP method ==================================================================

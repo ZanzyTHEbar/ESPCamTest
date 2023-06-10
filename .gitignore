@@ -3,5 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-tools/firmware-name.txt
+tools/firmware_name.txt
 __pycache__
+*.log
